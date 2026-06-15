@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>動作確認用ダミーサイト（本体サイトを模したもの）</title>
+  <!-- わざと攻撃的なCSSを入れて、ウィジェットに漏れないか（Shadow DOM分離）を確認する -->
+  <style>
+    * { letter-spacing: 0.05em; }
+    body { font-family: serif; margin: 0; color: #333; }
+    button { background: hotpink !important; border: 4px dashed lime; font-size: 30px; }
+    a { color: red; }
+    header { background: #222; color: #fff; padding: 40px 24px; }
+    .hero { padding: 80px 24px; background: #d9eff5; }
+    section { padding: 60px 24px; max-width: 800px; margin: 0 auto; }
+    h1 { font-size: 32px; }
+  </style>
+</head>
+<body>
+  <header><h1>MELLOW WETSUITS（テスト用ダミー）</h1></header>
+  <div class="hero">
+    <p>このページは本体サイトを模したテスト用です。ページ側に乱暴なCSS（ピンクのボタン等）を入れていますが、
+       右下のチャットウィジェットがその影響を受けない＝Shadow DOMで分離できていることを確認します。</p>
+    <button>ページ側のボタン（ピンクで正常）</button>
+    <p><a href="#">ページ側のリンク（赤で正常）</a></p>
+  </div>
+  <section>
+    <h2>動作チェック項目</h2>
+    <ul>
+      <li>右下に「質問する」ボタンが出る → クリックでパネル開閉</li>
+      <li>あいさつ文＋よくある質問ボタンが出る</li>
+      <li>プリセット質問クリック → 対応する回答が出る</li>
+      <li>「納期は？」など自由入力 → キーワード一致で回答</li>
+      <li>「あいうえお」など該当なし入力 → フォールバック文</li>
+      <li>ウィジェットがピンク/緑/赤などページ側CSSの影響を受けていない</li>
+    </ul>
+  </section>
+
+  <!-- 実際の設置と同じ1行。ローカルテストでは同フォルダ構成に合わせて相対参照 -->
+  <script src="../public/chat-widget.js" defer></script>
+</body>
+</html>

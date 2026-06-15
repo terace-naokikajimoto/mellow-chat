@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex" />
+  <title>メロー チャットサポート</title>
+  <style>
+    body { font-family: -apple-system, "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
+           margin: 0; background: #f5f7f9; color: #222; line-height: 1.8; }
+    .wrap { max-width: 640px; margin: 0 auto; padding: 60px 24px 120px; }
+    h1 { font-size: 22px; color: #0d6e8c; }
+    p { font-size: 15px; }
+    code { background: #eef1f3; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+    .note { background: #fff; border: 1px solid #e3e8ec; border-radius: 12px; padding: 20px 24px; margin-top: 24px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>メロー チャットサポート</h1>
+    <p>このページはチャットウィジェットの配信用サブドメインです。右下のボタンから動作確認ができます。</p>
+    <div class="note">
+      <p>本体サイトに設置するには、各ページの <code>&lt;/body&gt;</code> 直前に次の1行を追加してください。</p>
+      <p><code>&lt;script src="https://chat.mellow-wet.jp/chat-widget.js" defer&gt;&lt;/script&gt;</code></p>
+      <p>回答内容の編集は <code>faq.json</code> を書き換えるだけです。</p>
+    </div>
+  </div>
+
+  <!-- このページ自身でもウィジェットを動かして確認 -->
+  <script src="chat-widget.js" defer></script>
+</body>
+</html>

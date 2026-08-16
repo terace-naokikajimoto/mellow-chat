@@ -1,3 +1,6 @@
 node_modules/
 .DS_Store
 *.log
+
+# clasp（Apps Script）のローカル設定。scriptId を含むので追跡しない
+gas/.clasp.json

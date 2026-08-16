@@ -140,7 +140,7 @@ function exportLog_(p) {
   var rows = [];
   for (var r = values.length - 1; r >= 0; r--) {       // 新しい順
     var v = values[r];
-    var date = String(v[iDate] || "");
+    var date = normalizeDate_(v[iDate]);
     if (cutoff && date < cutoff) continue;
     var hitCell = String(v[iHit] || "");
     var hit = hitCell.indexOf("○") === 0;
@@ -173,7 +173,22 @@ function getSheet_() {
     sheet.getRange(1, 1, 1, HEADERS.length).setFontWeight("bold");
     sheet.setFrozenRows(1);
   }
+  // 日時列は「文字列」で持つ。書式が自動のままだと "2026-08-16 21:45:50" を
+  // スプレッドシートが日付型と解釈してしまい、exportLog_ の期間判定
+  // （固定幅の文字列比較）が成立しなくなって days 指定が無視される。
+  if (sheet.getRange("A2").getNumberFormat() !== "@") {
+    sheet.getRange(2, 1, sheet.getMaxRows() - 1, 1).setNumberFormat("@");
+  }
   return sheet;
+}
+
+// 日時セルの値を "yyyy-MM-dd HH:mm:ss" に揃える。
+// 上の書式指定より前に書かれた行は Date 型で入っているため、その救済も兼ねる。
+function normalizeDate_(v) {
+  if (v instanceof Date) {
+    return Utilities.formatDate(v, "Asia/Tokyo", "yyyy-MM-dd HH:mm:ss");
+  }
+  return String(v || "");
 }
 
 function json_(obj) {

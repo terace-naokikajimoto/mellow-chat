@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>設置テスト（GitHub Pages配信のウィジェットを外部サイトから読み込む）</title>
+  <style>
+    body { font-family: -apple-system, "Hiragino Sans", sans-serif; margin: 0; color: #222; line-height: 1.8; }
+    header { background: #123; color: #fff; padding: 32px 24px; }
+    header p { margin: 4px 0 0; opacity: .8; font-size: 14px; }
+    main { padding: 40px 24px; max-width: 760px; margin: 0 auto; }
+    code { background: #f2f4f6; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+    pre { background: #f2f4f6; padding: 14px; border-radius: 8px; overflow-x: auto; }
+    li { margin-bottom: 6px; }
+    .note { background: #fff8e1; border-left: 4px solid #f0b429; padding: 12px 16px; margin: 24px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>設置テスト用ページ</h1>
+    <p>mellow-wet.jp とは別の場所から、本番と同じ配信URLのウィジェットを読み込んでいます</p>
+  </header>
+
+  <main>
+    <p>このページは <code>test/sample-site.html</code>（ローカルのJSを読む）とは違い、
+       <strong>実際に本体サイトへ貼るのと全く同じ1行</strong>で設置しています。
+       つまり、ここで動けば他のどのサイトでもそのまま動きます。</p>
+
+    <pre>&lt;script src="https://terace-naokikajimoto.github.io/mellow-chat/chat-widget.js" defer&gt;&lt;/script&gt;</pre>
+
+    <h2>確認すること</h2>
+    <ul>
+      <li>右下に「質問する」ボタンが出る</li>
+      <li>「送料はかかりますか」→ 送料のFAQが返る（今回追加した分）</li>
+      <li>「北海道なんですけど冬は何を着ればいい」→ 地域別の装備が返る</li>
+      <li>「asdfqwer」→ フォールバック文が返る</li>
+      <li>質問がスプレッドシートに記録される</li>
+    </ul>
+
+    <div class="note">
+      <strong>ログ記録について</strong><br>
+      <code>gas/Code.gs</code> の <code>ALLOWED_PAGE_PREFIX</code> により、記録されるのは
+      <code>https://mellow-wet.jp</code> 配下と localhost からの送信だけです。
+      そのため、このページは <code>http://localhost:8000/</code> で開いてください
+      （<code>file://</code> で直接開くとJSONの読み込みがブロックされます）。
+    </div>
+
+    <h2>別のサイトにも設置したい場合</h2>
+    <p>ウィジェット自体はドメインを問わず動きますが、そのままだと
+       <strong>回答内容がメロー専用</strong>で、<strong>質問ログも弾かれます</strong>。
+       別サイトで使うなら、そのサイト用に <code>faq.json</code> を用意し、
+       <code>ALLOWED_PAGE_PREFIX</code> をそのドメインに変える必要があります。</p>
+  </main>
+
+  <script src="https://terace-naokikajimoto.github.io/mellow-chat/chat-widget.js" defer></script>
+</body>
+</html>

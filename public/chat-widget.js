@@ -28,11 +28,19 @@
     launcherLabel: "質問する",            // 吹き出しボタンの文字（空にするとアイコンのみ）
     accent: "#0d6e8c",                     // メインカラー（サイトのトーンに合わせて変更可）
     accentText: "#ffffff",                 // メインカラー上の文字色
-    placeholder: "メッセージを入力…",
+    // 何を書けばいいか分からず手が止まるのを防ぐため、具体例をそのまま置く
+    placeholder: "例：納期はどれくらい？",
     // faq.json の場所。通常はこのJSと同じフォルダなので相対パスでOK。
     // 別の場所に置く場合だけ絶対URLに変更（例: "https://chat.mellow-wet.jp/faq.json"）
     dataUrl: "faq.json",
     maxPresets: 6,                         // 「よくある質問」ボタンの表示数
+    // 開いた直後に出す「すぐ押せる質問」の数。カテゴリ名だけ並べても
+    // “何が聞けるのか”が伝わらず手が止まるので、具体的な質問を先に見せる。
+    // faq.json で "popular": true を付けた項目が優先される。
+    quickPicks: 4,
+    // 答えにたどり着けなかった人の逃げ道。選択肢の末尾に常設する。
+    contactUrl: "https://mellow-wet.jp/contact.html",
+    contactLabel: "✉️ スタッフに直接きく",
 
     // ▼ 質問のログ蓄積（Googleスプレッドシート）
     // Google Apps Script を「ウェブアプリ」としてデプロイして得たURLをここに貼ると、
@@ -308,6 +316,11 @@
     ui.form = root.querySelector(".mc-form");
     ui.input = root.querySelector(".mc-input");
     ui.send = root.querySelector(".mc-send");
+    ui.tray = root.querySelector(".mc-tray-toggle");
+    ui.trayTxt = root.querySelector(".mc-tray-txt");
+    ui.presets.id = "mc-presets";
+    ui.tray.addEventListener("click", function () { setTray(!trayOpen); });
+    setTray(trayOpen);   // ラベルと実際の開閉状態を初期化時に合わせる
 
     // 起動直後だけ、ランチャーで「ここから質問できる」とそっと気づかせる
     // （数回ふわっと光って自然に止まる。reduced-motion 環境では無効）
@@ -351,6 +364,9 @@
         "</header>" +
         '<div class="mc-body" role="log" aria-live="polite" aria-atomic="false"></div>' +
         '<div class="mc-presets"></div>' +
+        '<button class="mc-tray-toggle" type="button" aria-expanded="true" aria-controls="mc-presets">' +
+          '<span class="mc-tray-txt">よくある質問から選ぶ</span><span class="mc-tray-caret">▾</span>' +
+        "</button>" +
         '<form class="mc-form">' +
           '<input class="mc-input" type="text" placeholder="' + esc(CONFIG.placeholder) + '" autocomplete="off" enterkeyhint="send" inputmode="text" />' +
           '<button class="mc-send" type="submit" aria-label="送信" disabled>' + sendIcon() + "</button>" +
@@ -400,6 +416,7 @@
 
   function handleUserMessage(text, source) {
     addMessage(text, "user");
+    setTray(false);   // 回答を読むための場所を空ける（下の「よくある質問」で開き直せる）
     showTyping();
     // 少し間を置いて返答（自然な見た目）
     setTimeout(function () {
@@ -447,6 +464,7 @@
           outcome = "fallback";
           addMessage(DATA.fallback, "bot");
           renderCategoryMenu();
+          setTray(true);   // 「ここから探してください」と促す以上、選択肢は見えていないと意味がない
         }
       }
       // 質問をスプレッドシートに記録（結果種別つき。hitは後方互換で残す）
@@ -576,38 +594,141 @@
     return b;
   }
 
-  // 下部プリセット領域：トップ＝カテゴリ一覧（categories が無ければ従来の質問チップ）
-  function renderCategoryMenu() {
-    ui.presets.innerHTML = "";
-    if (DATA.categories && DATA.categories.length) {
-      var label = document.createElement("div");
-      label.className = "mc-presets-label";
-      label.textContent = "カテゴリから探す";
-      ui.presets.appendChild(label);
-      DATA.categories.forEach(function (cat) {
-        ui.presets.appendChild(makeChip(cat.label, "mc-chip mc-chip--cat", function () {
-          renderCategoryQuestions(cat);
-        }));
-      });
-    } else {
-      // 後方互換：カテゴリ定義が無い faq.json でも従来どおり動く
-      DATA.faqs.slice(0, CONFIG.maxPresets).forEach(function (item) {
-        ui.presets.appendChild(makeChip(item.q, "mc-chip", function () {
-          handleUserMessage(item.q, "preset");
-        }));
-      });
-    }
+  // ------------------------------------------------------------
+  // 選択肢エリアの開閉
+  // ------------------------------------------------------------
+  // 選択肢はパネルの半分近くを占めるため、会話が始まっても開いたままだと
+  // 肝心の回答が画面外に押し出される。質問を送った時点で畳み、
+  // 答えを出せずカテゴリへ誘導する時だけ開き直す。
+  var trayOpen = true;
+  function setTray(open) {
+    trayOpen = open;
+    ui.presets.classList.toggle("mc-hidden-tray", !open);
+    ui.tray.classList.toggle("mc-tray--closed", !open);
+    ui.tray.setAttribute("aria-expanded", open ? "true" : "false");
+    if (ui.trayTxt) ui.trayTxt.textContent = open ? "閉じる" : "よくある質問から選ぶ";
+    // 開閉で本文の高さが変わる。直前のメッセージが隠れたままにならないよう追従させる。
+    setTimeout(scrollBodyToEnd, 0);
   }
 
-  // カテゴリを選んだあと：そのカテゴリの質問一覧＋「戻る」
-  function renderCategoryQuestions(cat) {
+  // ------------------------------------------------------------
+  // 下部の選択肢エリア
+  // ------------------------------------------------------------
+  // FAQが増えるほど「全部並べる」は破綻するので、3階層に分けて
+  // 各階層の選択肢を絞る。どの階層でも見出しで“いま何を選んでいるか”を示し、
+  // 戻り先を必ず用意する（迷子にしない）。
+  //   ① トップ      … すぐ押せる質問4件 ＋ カテゴリを開く入口 ＋ 問い合わせ
+  //   ② カテゴリ一覧 … 件数つきのカテゴリ
+  //   ③ 質問一覧    … そのカテゴリの質問
+  // ------------------------------------------------------------
+
+  // 見出し行（現在地の表示＋戻るボタン）。onBack を渡した時だけ戻るが出る。
+  function presetsHead(text, onBack) {
+    var head = document.createElement("div");
+    head.className = "mc-presets-head";
+    var label = document.createElement("span");
+    label.className = "mc-presets-label";
+    label.textContent = text;
+    head.appendChild(label);
+    if (onBack) {
+      var back = document.createElement("button");
+      back.type = "button";
+      back.className = "mc-back";
+      back.textContent = "← 戻る";
+      back.addEventListener("click", onBack);
+      head.appendChild(back);
+    }
+    ui.presets.appendChild(head);
+  }
+
+  function faqsIn(cat) {
+    return DATA.faqs.filter(function (f) { return f.category === cat.id; });
+  }
+
+  // すぐ押せる質問を選ぶ。faq.json に "popular": true があればそれを、
+  // 無ければ各カテゴリの先頭（＝そのカテゴリの代表的な質問）を拾う。
+  function quickPickFaqs(n) {
+    var picked = DATA.faqs.filter(function (f) { return f.popular; }).slice(0, n);
+    if (picked.length >= n) return picked;
+    var seen = {};
+    picked.forEach(function (f) { seen[f.q] = true; });
+    (DATA.categories || []).forEach(function (cat) {
+      if (picked.length >= n) return;
+      var first = faqsIn(cat)[0];
+      if (first && !seen[first.q]) { picked.push(first); seen[first.q] = true; }
+    });
+    return picked.slice(0, n);
+  }
+
+  function questionChip(item) {
+    return makeChip(item.q, "mc-chip", function () {
+      handleUserMessage(item.q, "preset");
+    });
+  }
+
+  // 答えにたどり着けなかった人の逃げ道。どの階層からも1タップで出られる。
+  function appendContactChip() {
+    if (!CONFIG.contactUrl) return;
+    var a = document.createElement("a");
+    a.className = "mc-chip mc-chip--contact";
+    a.href = CONFIG.contactUrl;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = CONFIG.contactLabel;
+    ui.presets.appendChild(a);
+  }
+
+  // ① トップ：具体的な質問をまず見せる
+  function renderCategoryMenu() {
     ui.presets.innerHTML = "";
-    ui.presets.appendChild(makeChip("← カテゴリ一覧", "mc-chip mc-chip--back", renderCategoryMenu));
-    DATA.faqs.filter(function (f) { return f.category === cat.id; }).forEach(function (item) {
-      ui.presets.appendChild(makeChip(item.q, "mc-chip", function () {
-        handleUserMessage(item.q, "preset");
+    ui.presets.scrollTop = 0;
+
+    if (!(DATA.categories && DATA.categories.length)) {
+      // 後方互換：カテゴリ定義が無い faq.json でも従来どおり動く
+      presetsHead("よくある質問");
+      DATA.faqs.slice(0, CONFIG.maxPresets).forEach(function (item) {
+        ui.presets.appendChild(questionChip(item));
+      });
+      appendContactChip();
+      return;
+    }
+
+    var picks = quickPickFaqs(CONFIG.quickPicks);
+    if (picks.length) {
+      presetsHead("よくある質問");
+      picks.forEach(function (item) { ui.presets.appendChild(questionChip(item)); });
+    }
+    ui.presets.appendChild(makeChip(
+      "📂 カテゴリから探す（全" + DATA.faqs.length + "件）",
+      "mc-chip mc-chip--cat",
+      renderCategoryList
+    ));
+    appendContactChip();
+  }
+
+  // ② カテゴリ一覧：件数を出して「どれくらい載っているか」を伝える
+  function renderCategoryList() {
+    ui.presets.innerHTML = "";
+    ui.presets.scrollTop = 0;
+    presetsHead("カテゴリから探す", renderCategoryMenu);
+    DATA.categories.forEach(function (cat) {
+      var n = faqsIn(cat).length;
+      if (!n) return;
+      ui.presets.appendChild(makeChip(cat.label + " " + n, "mc-chip mc-chip--cat", function () {
+        renderCategoryQuestions(cat);
       }));
     });
+    appendContactChip();
+  }
+
+  // ③ 質問一覧：見出しにカテゴリ名を出す（どこを見ているか分かるように）
+  function renderCategoryQuestions(cat) {
+    ui.presets.innerHTML = "";
+    ui.presets.scrollTop = 0;
+    var items = faqsIn(cat);
+    presetsHead(cat.label + "（" + items.length + "件）", renderCategoryList);
+    items.forEach(function (item) { ui.presets.appendChild(questionChip(item)); });
+    appendContactChip();
   }
 
   // 断定できなかった時：意図の近いFAQ候補を本文に提示し、回答へ誘導する。
@@ -625,6 +746,7 @@
     wrap.appendChild(makeChip("どれも違う／カテゴリから探す", "mc-chip mc-chip--back", function () {
       addMessage(DATA.fallback, "bot");
       renderCategoryMenu();
+      setTray(true);
     }));
     ui.body.appendChild(wrap);
     scrollBodyToEnd();
@@ -633,9 +755,11 @@
   // 回答のあと：同カテゴリの別の質問を「あわせて読まれています」として本文に提示
   function renderRelated(hit) {
     if (!hit || !hit.category) return;
+    // 回答の下には「関連質問」と「解決しましたか？」が続けて出る。
+    // 3件だとボタンが5つ縦に積まれて主役の回答が埋もれるため2件に絞る。
     var related = DATA.faqs.filter(function (f) {
       return f.category === hit.category && f.q !== hit.q;
-    }).slice(0, 3);
+    }).slice(0, 2);
     if (!related.length) return;
 
     var wrap = document.createElement("div");
@@ -718,7 +842,8 @@
     ".mc-header-txt{display:flex;flex-direction:column;gap:2px;}" +
     ".mc-header-txt strong{font-size:16px;}" +
     ".mc-header-txt span{font-size:12px;opacity:.9;}" +
-    ".mc-close{background:transparent;border:none;color:" + at + ";font-size:22px;line-height:1;cursor:pointer;width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;opacity:.9;transition:background .12s,opacity .12s;flex:none;}" +
+    // 閉じるは指で押す前提。44px確保（Appleのタップ領域の推奨に合わせる）
+    ".mc-close{background:transparent;border:none;color:" + at + ";font-size:24px;line-height:1;cursor:pointer;width:44px;height:44px;margin:-5px -8px -5px 0;border-radius:10px;display:flex;align-items:center;justify-content:center;opacity:.9;transition:background .12s,opacity .12s;flex:none;}" +
     ".mc-close:hover{opacity:1;background:rgba(255,255,255,.16);}" +
     ".mc-close:focus-visible{outline:2px solid " + at + ";outline-offset:2px;}" +
     // 本文
@@ -742,10 +867,18 @@
     // 関連質問（回答の下に出る「こちらもよく見られています」）
     ".mc-related{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px;}" +
     ".mc-related-label{width:100%;font-size:11.5px;color:#7a8a93;margin-bottom:2px;}" +
-    // プリセット
-    ".mc-presets{display:flex;flex-wrap:wrap;gap:6px;padding:10px 12px;border-top:1px solid #eef1f3;background:#fff;max-height:160px;overflow-y:auto;overscroll-behavior:contain;}" +
-    ".mc-presets-label{width:100%;font-size:11.5px;color:#7a8a93;margin-bottom:2px;}" +
-    ".mc-chip{border:1px solid " + a + ";color:" + a + ";background:#fff;border-radius:999px;padding:7px 13px;min-height:34px;font-size:12.5px;cursor:pointer;transition:background .12s,color .12s,transform .08s;text-align:left;}" +
+    // プリセット（選択肢エリア）。FAQが52件に増えたので、狭い帯に押し込まず
+    // パネルの4割程度まで使う。会話ログとの境目は上の罫線＋背景差で示す。
+    ".mc-presets{display:flex;flex-wrap:wrap;align-content:flex-start;gap:6px;padding:0 12px 12px;border-top:1px solid #e3e8ec;background:#fff;max-height:46%;overflow-y:auto;overscroll-behavior:contain;}" +
+    // 見出し行：現在地＋戻る。長い一覧をスクロールしても消えないよう上に貼り付ける
+    // （流れて消えると、どこにいるのか・どう戻るのかが分からなくなる）。
+    ".mc-presets-head{position:sticky;top:0;z-index:1;width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 0 5px;background:#fff;}" +
+    ".mc-presets-head:not(:first-child){margin-top:6px;border-top:1px solid #f0f3f5;padding-top:10px;}" +
+    ".mc-presets-label{font-size:11.5px;color:#7a8a93;}" +
+    ".mc-back{border:none;background:transparent;color:" + a + ";font-size:12px;font-weight:bold;cursor:pointer;padding:4px 8px;border-radius:8px;flex:none;}" +
+    ".mc-back:hover{background:#eef4f7;}" +
+    ".mc-back:focus-visible{outline:2px solid " + a + ";outline-offset:1px;}" +
+    ".mc-chip{border:1px solid " + a + ";color:" + a + ";background:#fff;border-radius:999px;padding:8px 14px;min-height:38px;display:inline-flex;align-items:center;font-size:12.5px;line-height:1.35;cursor:pointer;transition:background .12s,color .12s,transform .08s;text-align:left;text-decoration:none;}" +
     ".mc-chip:hover{background:" + a + ";color:" + at + ";}" +
     ".mc-chip:active{transform:scale(.97);}" +
     ".mc-chip:focus-visible{outline:2px solid " + a + ";outline-offset:2px;}" +
@@ -755,11 +888,22 @@
     ".mc-chip--chosen.mc-chip--related{background:" + a + ";color:" + at + ";border-color:" + a + ";}" +
     ".mc-chip--chosen.mc-chip--back{background:#5a6a72;color:#fff;border-color:#5a6a72;}" +
     ".mc-chip--cat{font-weight:bold;}" +
+    // 問い合わせは「答えが出なかった時の出口」なので、質問チップとは別物に見せる
+    ".mc-chip--contact{width:100%;justify-content:center;margin-top:6px;border-style:dashed;border-color:#c9d3d9;color:#5a6a72;font-weight:bold;}" +
+    ".mc-chip--contact:hover{background:#5a6a72;color:#fff;border-color:#5a6a72;border-style:solid;}" +
     ".mc-chip--back{border-color:#c9d3d9;color:#5a6a72;}" +
     ".mc-chip--back:hover{background:#5a6a72;color:#fff;}" +
     ".mc-chip--back:focus-visible{outline-color:#5a6a72;}" +
     ".mc-chip--related{font-size:12px;background:#f0f5f7;border-color:#dbe4e8;}" +
     ".mc-chip--suggest{font-size:12.5px;background:#fff;border-color:" + a + ";font-weight:bold;}" +
+    // 選択肢エリアの開閉バー。畳んでいる間も「まだ選択肢がある」と示し続ける。
+    ".mc-tray-toggle{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;border:none;border-top:1px solid #eef1f3;background:#fff;color:#5a6a72;font-size:12px;font-weight:bold;padding:9px 12px;cursor:pointer;transition:background .12s;}" +
+    ".mc-tray-toggle:hover{background:#f4f7f9;}" +
+    ".mc-tray-toggle:focus-visible{outline:2px solid " + a + ";outline-offset:-2px;}" +
+    ".mc-tray--closed{color:" + a + ";}" +
+    ".mc-tray-caret{font-size:10px;transition:transform .15s;}" +
+    ".mc-tray--closed .mc-tray-caret{transform:rotate(180deg);}" +
+    ".mc-hidden-tray{display:none;}" +
     // 入力フォーム（font-size:16px = iOSの自動ズーム防止。タップしても画面が拡大しない）
     ".mc-form{display:flex;align-items:center;gap:8px;padding:10px 12px;border-top:1px solid #eef1f3;background:#fff;}" +
     ".mc-input{flex:1;min-width:0;border:1px solid #ccd4da;border-radius:999px;padding:10px 14px;font-size:16px;outline:none;transition:border-color .12s,box-shadow .12s;}" +

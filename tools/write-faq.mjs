@@ -18,6 +18,8 @@ export function formatFaq(data) {
     L.push(`      "category": ${j(f.category)},`);
     L.push(`      "q": ${j(f.q)},`);
     L.push(`      "keywords": [${f.keywords.map(j).join(", ")}],`);
+    // popular は「開いた直後にすぐ押せる質問」に出す印。付いていない項目には書かない。
+    if (f.popular) L.push(`      "popular": true,`);
     L.push(`      "answer": ${j(f.answer)}`);
     L.push(`    }${i < data.faqs.length - 1 ? "," : ""}`);
   });

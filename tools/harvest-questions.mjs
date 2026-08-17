@@ -10,7 +10,7 @@
  *
  * 使い方:
  *   MELLOW_LOG_URL="https://script.google.com/macros/s/XXX/exec" \
- *   MELLOW_LOG_TOKEN="（任意・SHARED_TOKENと同じ文字列）" \
+ *   MELLOW_EXPORT_TOKEN="（閲覧用トークン）" \
  *   node tools/harvest-questions.mjs            # 直近30日
  *   node tools/harvest-questions.mjs --days 60  # 期間を指定
  *   node tools/harvest-questions.mjs --all      # 全期間
@@ -41,7 +41,9 @@ function parseArgs(argv) {
     else if (k === "--token") a.token = argv[++i] || "";
   }
   a.url = a.url || process.env.MELLOW_LOG_URL || "";
-  a.token = a.token || process.env.MELLOW_LOG_TOKEN || "";
+  // 閲覧は書き込みとは別のトークン。書き込み用（公開JSに載っている値）では
+  // エクスポートできない。スクリプトエディタで setupExportToken を実行して発行する。
+  a.token = a.token || process.env.MELLOW_EXPORT_TOKEN || "";
   return a;
 }
 
@@ -89,7 +91,14 @@ async function fetchLog(a) {
   const res = await fetch(u, { redirect: "follow", headers: { "User-Agent": "mellow-harvest/1.0" } });
   if (!res.ok) throw new Error(`HTTP ${res.status}（エクスポートURL・公開設定を確認）`);
   const data = await res.json();
-  if (!data || data.ok === false) throw new Error(`エクスポート拒否: ${data && data.error}（tokenを確認）`);
+  if (!data || data.ok === false) {
+    throw new Error(
+      `エクスポート拒否: ${data && data.error}\n` +
+      "閲覧用トークンが未発行か、値が違います。スクリプトエディタで setupExportToken を\n" +
+      "1回実行し、出力された値を MELLOW_EXPORT_TOKEN に設定してください。\n" +
+      "（書き込み用トークン＝公開JS内の値ではエクスポートできません）"
+    );
+  }
   return Array.isArray(data.rows) ? data.rows : [];
 }
 

@@ -52,7 +52,20 @@
     // ※公開JS内なので完全な秘匿ではありませんが、無差別スパムの大半は防げます。
     logToken: "a84625f7acfb218fd18482c16cf67ee4",
     // プリセットボタン経由の質問も記録するか（false=自由入力のみ記録）
-    logPresetClicks: true
+    logPresetClicks: true,
+
+    // ▼ 回答内リンクの許可ドメイン
+    // faq.json は外部から読み込むファイルなので、書き換えられると
+    // 「メローからの案内」に見える偽サイトへの誘導に使われうる。
+    // 実際に案内する先は決まっているため、ここに挙げたドメイン以外への
+    // リンクは描画時に外す（文字は残るのでリンクが消えたことは分かる）。
+    // 新しい掲載先が増えたらここに1行足す。空配列にすると制限しない。
+    allowedLinkHosts: [
+      "mellow-wet.jp",
+      "www.rakuten.co.jp",
+      "store.shopping.yahoo.co.jp",
+      "mellow-chigasaki.com"
+    ]
   };
 
   // ============================================================
@@ -171,6 +184,92 @@
   // HTMLタグを除いた素のテキスト（回答本文も検索対象にするため）
   function stripHtml(html) {
     return String(html || "").replace(/<[^>]*>/g, " ").replace(/&[a-z]+;/g, " ");
+  }
+
+  // ============================================================
+  // 回答HTMLのサニタイズ
+  // ------------------------------------------------------------
+  // 回答は faq.json という「外部から読み込むファイル」に入っており、
+  // 編集はプログラマ以外も行う前提（READMEでもそう案内している）。
+  // それを無検査で innerHTML に渡すと、faq.json に何か紛れ込んだ時点で
+  // 本体サイト上で任意のスクリプトが動く状態になる。
+  // 配信元の乗っ取り・編集ミス・コピペ由来の埋め込みタグなどを想定し、
+  // 「装飾とリンクだけ通す」ホワイトリスト方式で描画する。
+  // ============================================================
+  var ALLOWED_TAGS = { A: 1, B: 1, STRONG: 1, EM: 1, I: 1, BR: 1, UL: 1, OL: 1, LI: 1, SPAN: 1, SMALL: 1, P: 1, DIV: 1 };
+  // 中身ごと捨てるタグ。これらの中身はコードや設定であって読ませる文章ではないので、
+  // テキストとして残すと "alert(1)" や "body{display:none}" が回答に混じってしまう。
+  var DROP_WITH_CONTENT = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEMPLATE: 1, IFRAME: 1, OBJECT: 1, EMBED: 1, SVG: 1, MATH: 1, HEAD: 1, TITLE: 1 };
+  // 通すURLスキーム。javascript: と data: を確実に落とすため許可制にする。
+  var SAFE_SCHEME = /^(https?:|mailto:|tel:|\/|#|\.)/i;
+
+  // リンク先が許可ドメインか判定する。相対パス・#・mailto/tel は常に許可
+  // （相対パスは本体サイト内、mailto/tel は連絡先なので誘導リスクが無い）。
+  function allowedHost(href) {
+    var list = CONFIG.allowedLinkHosts;
+    if (!list || !list.length) return true;
+    var h = String(href || "").trim();
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(h) && h.indexOf("//") !== 0) return true;  // 相対・#
+    if (/^(mailto:|tel:)/i.test(h)) return true;
+    try {
+      var host = new URL(h, location.href).hostname.toLowerCase();
+      for (var i = 0; i < list.length; i++) {
+        var a = String(list[i]).toLowerCase();
+        // 完全一致か、サブドメイン（.example.com）のみ許可。
+        // "evilmellow-wet.jp" のような後方一致すり抜けを防ぐため接頭辞に . を要求する。
+        if (host === a || host.slice(-(a.length + 1)) === "." + a) return true;
+      }
+      return false;
+    } catch (e) {
+      return false;   // 解釈できないURLは通さない
+    }
+  }
+
+  function sanitizeHtml(html) {
+    var tpl = document.createElement("div");
+    // ここでは描画せず解析だけ（未挿入のノードなので script は実行されない）
+    tpl.innerHTML = String(html == null ? "" : html);
+    walk(tpl);
+    return tpl;
+
+    function walk(node) {
+      var kids = [].slice.call(node.childNodes);
+      for (var i = 0; i < kids.length; i++) {
+        var el = kids[i];
+        if (el.nodeType === 3) continue;                 // テキストはそのまま
+        if (el.nodeType !== 1) { node.removeChild(el); continue; }
+        if (DROP_WITH_CONTENT[el.tagName]) { node.removeChild(el); continue; }
+        if (!ALLOWED_TAGS[el.tagName]) {
+          // 許可外のタグは中身のテキストだけ残して要素自体を捨てる
+          // （script/iframe/img/svg/style などはここで消える）
+          node.replaceChild(document.createTextNode(el.textContent || ""), el);
+          continue;
+        }
+        // 属性は href / target / rel だけ通し、他は全部落とす（onerror等の除去）
+        [].slice.call(el.attributes).forEach(function (at) {
+          var n = at.name.toLowerCase();
+          if (n !== "href" && n !== "target" && n !== "rel") el.removeAttribute(at.name);
+        });
+        if (el.tagName === "A") {
+          var href = el.getAttribute("href") || "";
+          if (!SAFE_SCHEME.test(href.replace(/[\s -]/g, ""))) {
+            el.removeAttribute("href");
+            el.removeAttribute("target");
+          } else if (!allowedHost(href)) {
+            // 許可していない外部サイトへのリンクは無効化する。
+            // faq.json が書き換えられた場合の「メローからの案内に見える誘導」を防ぐ。
+            el.removeAttribute("href");
+            el.removeAttribute("target");
+            if (window.console) console.warn("[mellow-chat] 許可外のリンク先を無効化しました:", href);
+          }
+          // 別タブで開くリンクは必ず noopener を付ける（開いた先からの操作を防ぐ）
+          if (el.getAttribute("target") === "_blank") {
+            el.setAttribute("rel", "noopener noreferrer");
+          }
+        }
+        walk(el);
+      }
+    }
   }
 
   // 文字bi-gram集合を作る（1文字語はそのまま1要素に）
@@ -407,8 +506,28 @@
     if (who === "user") {
       bubble.textContent = html; // ユーザー入力はテキスト扱い（XSS防止）
     } else {
-      bubble.innerHTML = html;   // bot側はfaq.jsonの信頼できるHTMLのみ
+      // bot側は faq.json 由来。装飾とリンクだけに絞ってから入れる。
+      var safe = sanitizeHtml(html);
+      while (safe.firstChild) bubble.appendChild(safe.firstChild);
     }
+    row.appendChild(bubble);
+    ui.body.appendChild(row);
+    scrollBodyToEnd();
+  }
+
+  // 回答バブル（質問見出し＋本文）。見出しは textContent で入れるので、
+  // faq.json の q に記号やタグが混じっても文字として表示されるだけになる。
+  function addAnswer(hit) {
+    var row = document.createElement("div");
+    row.className = "mc-msg mc-msg--bot";
+    var bubble = document.createElement("div");
+    bubble.className = "mc-bubble";
+    var head = document.createElement("div");
+    head.className = "mc-ans-q";
+    head.textContent = hit.q;
+    bubble.appendChild(head);
+    var safe = sanitizeHtml(hit.answer);
+    while (safe.firstChild) bubble.appendChild(safe.firstChild);
     row.appendChild(bubble);
     ui.body.appendChild(row);
     scrollBodyToEnd();
@@ -445,7 +564,7 @@
         // 【確信あり】そのまま回答
         outcome = "answered";
         hit = top.item;
-        addMessage("<div class=\"mc-ans-q\">" + esc(hit.q) + "</div>" + hit.answer, "bot");
+        addAnswer(hit);
         renderRelated(hit);            // 同じカテゴリの関連質問をすすめる
         renderFeedback(text);          // 「解決しましたか？」で“自信あり×的外れ”を捕捉
       } else {
@@ -537,7 +656,19 @@
   function maskPII(s) {
     return String(s == null ? "" : s)
       .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "[メール]")
-      .replace(/0\d{1,3}[-(\s]?\d{1,4}[-)\s]?\d{3,4}/g, "[電話]");
+      .replace(/0\d{1,3}[-(\s]?\d{1,4}[-)\s]?\d{3,4}/g, "[電話]")
+      // カード番号・口座番号のような長い数字列。質問文に必要な桁数ではないので伏せる。
+      .replace(/\d[\d\s-]{11,}\d/g, "[番号]");
+  }
+
+  // 記録するページURLはパスまでにする。?以降には検索語や識別子が入ることがあり、
+  // 将来サイトにそういうURLができた時、質問ログ側に個人情報が溜まってしまう。
+  function pagePath() {
+    try {
+      return location.origin + location.pathname;
+    } catch (e) {
+      return String(location.href || "").split(/[?#]/)[0];
+    }
   }
   // UAはOS/ブラウザ程度の要約だけ記録（フル送信は個人特定性が高く不要）
   function shortUA() {
@@ -565,7 +696,7 @@
         hit: !!hit,                                     // true=回答できた / false=フォールバック
         outcome: outcome || "",                         // answered/ambiguous/suggested/fallback/resolved/unresolved
         source: source,                                 // "input"（自由入力）or "preset"（ボタン）or "feedback"
-        page: location.href,                            // 質問が出たページ
+        page: pagePath(),                               // 質問が出たページ（?以降は送らない）
         ua: shortUA()                                   // OS/ブラウザの要約のみ
       });
       // sendBeacon が使えれば最優先（離脱時も確実に送れる）
@@ -961,6 +1092,7 @@
       rankAnswers: rankAnswers,
       findAnswer: findAnswer,
       normalize: normalize,
+      sanitizeHtml: sanitizeHtml,   // DOMが必要なのでブラウザ上のテストから呼ぶ
       CONFIDENT_SCORE: CONFIDENT_SCORE,
       SUGGEST_SCORE: SUGGEST_SCORE
     };

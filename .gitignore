@@ -4,3 +4,7 @@ node_modules/
 
 # clasp（Apps Script）のローカル設定。scriptId を含むので追跡しない
 gas/.clasp.json
+
+# 質問ログの書き出し（訪問者の質問そのもの）。公開リポジトリなので絶対に載せない
+tools/unanswered.json
+*.csv

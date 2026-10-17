@@ -103,7 +103,9 @@ function doPost(e) {
     if (!underRateLimit_()) {
       return json_({ ok: false, error: "rate limited" });
     }
-    var question = String(data.question || "").slice(0, MAX_QUESTION_LEN);
+    // 伏字はウィジェット側でも行うが、古いJSがキャッシュに残っている端末や
+    // 直接POSTされた場合に備えて、保存直前にもう一度かける。
+    var question = maskPII_(String(data.question || "")).slice(0, MAX_QUESTION_LEN);
 
     var sheet = getSheet_();
     var now = Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyy-MM-dd HH:mm:ss");
@@ -122,7 +124,9 @@ function doPost(e) {
 
     return json_({ ok: true });
   } catch (err) {
-    return json_({ ok: false, error: String(err) });
+    // 例外の中身（シート名・行番号など内部の情報）は外へ返さず、記録だけ残す。
+    console.error(err);
+    return json_({ ok: false, error: "server error" });
   }
 }
 
@@ -153,7 +157,7 @@ function exportLog_(p) {
   // 載っているため、それで閲覧を許すと誰でも質問ログを吸い出せてしまう。
   // 未発行なら常に拒否（既定で閉じている＝設定し忘れが穴にならない）。
   var expected = getExportToken_();
-  if (!expected || String(p.token || "") !== expected) {
+  if (!expected || !sameToken_(String(p.token || ""), expected)) {
     return json_({ ok: false, error: "unauthorized" });
   }
 
@@ -203,6 +207,24 @@ function exportLog_(p) {
     if (rows.length >= limit) break;
   }
   return json_({ ok: true, count: rows.length, rows: rows });
+}
+
+// トークンの比較。=== は最初に違う文字で止まるため、応答時間の差から
+// 1文字ずつ当てられる余地がある。長さが同じなら最後まで比べる。
+function sameToken_(a, b) {
+  if (a.length !== b.length) return false;
+  var diff = 0;
+  for (var i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+// 質問文に紛れ込んだ連絡先を伏字にする（public/chat-widget.js の maskPII と同じ規則）。
+function maskPII_(s) {
+  return String(s == null ? "" : s)
+    .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "[メール]")
+    .replace(/0\d{1,3}[-(\s]?\d{1,4}[-)\s]?\d{3,4}/g, "[電話]")
+    .replace(/\d[\d\s-]{11,}\d/g, "[番号]")
+    .replace(/〒?\s?\d{3}-\d{4}/g, "[郵便番号]");
 }
 
 // 訪問者の入力をセルに入れる前に「ただの文字列」へ落とす。
@@ -293,6 +315,37 @@ function clearTestRows() {
     }
   }
   Logger.log("削除した行数: " + removed);
+}
+
+// ------------------------------------------------------------------
+// 保存期間：古い質問ログを自動で消す
+// ------------------------------------------------------------------
+// FAQ育成に使うのは直近の数か月分だけ。訪問者の質問を無期限に持ち続けると、
+// 万一シートが漏れたときの被害が大きくなるだけなので、期限を過ぎた行は消す。
+// 【使い方】スクリプトエディタで setupRetentionTrigger を1回実行すると、
+// 毎日深夜に purgeOldRows が動くようになる。
+var RETENTION_DAYS = 180;
+
+function purgeOldRows() {
+  var sheet = getSheet_();
+  var last = sheet.getLastRow();
+  if (last < 2) return;
+  var since = new Date(new Date().getTime() - RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  var cutoff = Utilities.formatDate(since, "Asia/Tokyo", "yyyy-MM-dd HH:mm:ss");
+  var dates = sheet.getRange(2, 1, last - 1, 1).getValues();
+  // 行は時系列に追記されるので、期限切れは先頭から連続している
+  var n = 0;
+  while (n < dates.length && normalizeDate_(dates[n][0]) < cutoff) n++;
+  if (n > 0) sheet.deleteRows(2, n);
+  Logger.log("期限切れで削除した行数: " + n);
+}
+
+function setupRetentionTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === "purgeOldRows") ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger("purgeOldRows").timeBased().everyDays(1).atHour(3).create();
+  Logger.log("毎日3時に " + RETENTION_DAYS + " 日より古い行を削除します");
 }
 
 function json_(obj) {

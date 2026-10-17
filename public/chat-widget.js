@@ -30,6 +30,8 @@
     accentText: "#ffffff",                 // メインカラー上の文字色
     // 何を書けばいいか分からず手が止まるのを防ぐため、具体例をそのまま置く
     placeholder: "例：納期はどれくらい？",
+    // 入力欄の下に出す注意書き。質問を記録していることと、個人情報を書かないお願い。
+    privacyNote: "ご質問はサービス改善のため記録します。お名前・ご住所・お電話番号などは入力しないでください。",
     // faq.json の場所。通常はこのJSと同じフォルダなので相対パスでOK。
     // 別の場所に置く場合だけ絶対URLに変更（例: "https://chat.mellow-wet.jp/faq.json"）
     dataUrl: "faq.json",
@@ -483,6 +485,9 @@
           '<input class="mc-input" type="text" placeholder="' + esc(CONFIG.placeholder) + '" autocomplete="off" enterkeyhint="send" inputmode="text" />' +
           '<button class="mc-send" type="submit" aria-label="送信" disabled>' + sendIcon() + "</button>" +
         "</form>" +
+        // 質問は記録してFAQ改善に使う。書かれた個人情報は伏字にするが、名前や
+        // 住所までは機械で見分けきれないので、入力前にお願いとして伝える。
+        '<p class="mc-note">' + esc(CONFIG.privacyNote) + "</p>" +
       "</section>"
     );
   }
@@ -671,7 +676,9 @@
       .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "[メール]")
       .replace(/0\d{1,3}[-(\s]?\d{1,4}[-)\s]?\d{3,4}/g, "[電話]")
       // カード番号・口座番号のような長い数字列。質問文に必要な桁数ではないので伏せる。
-      .replace(/\d[\d\s-]{11,}\d/g, "[番号]");
+      .replace(/\d[\d\s-]{11,}\d/g, "[番号]")
+      // 郵便番号（〒123-4567 / 123-4567）。住所の手がかりになるので伏せる。
+      .replace(/〒?\s?\d{3}-\d{4}/g, "[郵便番号]");
   }
 
   // 記録するページURLはパスまでにする。?以降には検索語や識別子が入ることがあり、
@@ -1054,7 +1061,8 @@
     ".mc-tray--closed .mc-tray-caret{transform:rotate(180deg);}" +
     ".mc-hidden-tray{display:none;}" +
     // 入力フォーム（font-size:16px = iOSの自動ズーム防止。タップしても画面が拡大しない）
-    ".mc-form{display:flex;align-items:center;gap:8px;padding:10px 12px;border-top:1px solid #eeeeee;background:#fff;}" +
+    ".mc-form{display:flex;align-items:center;gap:8px;padding:10px 12px 6px;border-top:1px solid #eeeeee;background:#fff;}" +
+    ".mc-note{margin:0;padding:0 14px 8px;background:#fff;color:#888888;font-size:10.5px;line-height:1.5;}" +
     ".mc-input{flex:1;min-width:0;border:1px solid #d0d0d0;border-radius:999px;padding:10px 14px;font-size:16px;outline:none;transition:border-color .12s,box-shadow .12s;}" +
     ".mc-input:focus{border-color:" + a + ";box-shadow:0 0 0 3px " + glow + ";}" +
     ".mc-send{border:none;background:" + a + ";color:" + at + ";width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;flex:none;transition:opacity .12s,transform .08s;}" +
@@ -1067,7 +1075,7 @@
     ".mc-body::-webkit-scrollbar-thumb,.mc-presets::-webkit-scrollbar-thumb{background:#d0d0d0;border-radius:8px;}" +
     ".mc-body::-webkit-scrollbar-track,.mc-presets::-webkit-scrollbar-track{background:transparent;}" +
     // スマホ：実機の表示領域(dvh)に合わせ、ノッチ/ホームバーを避ける
-    "@media (max-width:480px){.mc-panel{right:0;bottom:0;width:100vw;height:100vh;height:100dvh;max-width:100vw;max-height:100vh;max-height:100dvh;border-radius:0;}.mc-form{padding-bottom:calc(10px + env(safe-area-inset-bottom,0px));}.mc-launcher{right:calc(16px + env(safe-area-inset-right,0px));bottom:calc(16px + env(safe-area-inset-bottom,0px));}}" +
+    "@media (max-width:480px){.mc-panel{right:0;bottom:0;width:100vw;height:100vh;height:100dvh;max-width:100vw;max-height:100vh;max-height:100dvh;border-radius:0;}.mc-note{padding-bottom:calc(8px + env(safe-area-inset-bottom,0px));}.mc-launcher{right:calc(16px + env(safe-area-inset-right,0px));bottom:calc(16px + env(safe-area-inset-bottom,0px));}}" +
     // 「動きを減らす」設定の人にはアニメ・スムーススクロールを止める（酔い・負担への配慮）
     "@media (prefers-reduced-motion:reduce){.mc-root *,.mc-panel,.mc-launcher,.mc-msg{transition:none!important;animation:none!important;}}";
   }

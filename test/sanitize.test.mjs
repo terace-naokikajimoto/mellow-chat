@@ -85,6 +85,9 @@ async function evaluate(expression) {
 // window.module を先に置くと、ウィジェットは「テスト用の書き出し」経路を通り、
 // UIを組まずに内部関数だけを返す（本番の動作には影響しない分岐）。
 await evaluate("window.module = { exports: {} };");
+// ①の入力は alert(1) を含む。解析中に本当に実行されるとダイアログでページが
+// 止まり、以降の評価が返らなくなる。alert は「呼ばれた記録」に差し替えて⑦で見る。
+await evaluate("window.__mcFired = []; window.alert = function () { window.__mcFired.push('alert'); };");
 await evaluate(widgetSrc);
 
 const results = await evaluate(`(function () {
@@ -179,6 +182,26 @@ const results = await evaluate(`(function () {
 
   return out;
 })()`);
+
+// ⑦ 解析の途中でスクリプトが動かないこと
+// 上の①は「出力に残らないか」しか見ていない。だが通常の document で作った
+// 要素に innerHTML を入れると、取り除く前に <img onerror> の読み込みが始まり、
+// 出力が空でもハンドラは発火する。実際に発火したかを旗で確かめる。
+// ヘッドレスのタブはタイマーが止まることがあるので、待つのは Node 側で行う。
+await evaluate(`(function () {
+  var W = window.module.exports;
+  [
+    '<img src=x onerror="window.__mcFired.push(\\'img\\')">',
+    '<details open ontoggle="window.__mcFired.push(\\'details\\')">x</details>'
+  ].forEach(function (s) { W.sanitizeHtml(s); });
+})()`);
+await sleep(1500);
+const fired = await evaluate("window.__mcFired");
+results.push({
+  name: "解析中にハンドラが発火しない（img onerror など）",
+  ok: fired.length === 0,
+  detail: fired.join(", "),
+});
 
 let pass = 0;
 for (const r of results) {

@@ -26,7 +26,7 @@
     title: "メロー チャットサポート",      // パネル上部のタイトル
     subtitle: "ウェットスーツのご質問にお答えします",
     launcherLabel: "質問する",            // 吹き出しボタンの文字（空にするとアイコンのみ）
-    accent: "#0d6e8c",                     // メインカラー（サイトのトーンに合わせて変更可）
+    accent: "#111111",                     // メインカラー（サイトのトーンに合わせて変更可）
     accentText: "#ffffff",                 // メインカラー上の文字色
     // 何を書けばいいか分からず手が止まるのを防ぐため、具体例をそのまま置く
     placeholder: "例：納期はどれくらい？",
@@ -226,11 +226,17 @@
   }
 
   function sanitizeHtml(html) {
-    var tpl = document.createElement("div");
-    // ここでは描画せず解析だけ（未挿入のノードなので script は実行されない）
+    // 解析は表示に使わない別文書の中で行う。いまのページの document で作った要素に
+    // innerHTML を入れると、未挿入でも <img onerror> の読み込みが始まり、取り除く
+    // 前にハンドラが動く。別文書（ブラウザで開かれていない文書）では読み込みも
+    // イベントも起きないので、安全なものだけ選んでから本体側へ移す。
+    var doc = document.implementation.createHTMLDocument("");
+    var tpl = doc.createElement("div");
     tpl.innerHTML = String(html == null ? "" : html);
     walk(tpl);
-    return tpl;
+    var out = document.createElement("div");
+    while (tpl.firstChild) out.appendChild(document.adoptNode(tpl.firstChild));
+    return out;
 
     function walk(node) {
       var kids = [].slice.call(node.childNodes);
@@ -242,7 +248,7 @@
         if (!ALLOWED_TAGS[el.tagName]) {
           // 許可外のタグは中身のテキストだけ残して要素自体を捨てる
           // （script/iframe/img/svg/style などはここで消える）
-          node.replaceChild(document.createTextNode(el.textContent || ""), el);
+          node.replaceChild(el.ownerDocument.createTextNode(el.textContent || ""), el);
           continue;
         }
         // 属性は href / target / rel だけ通し、他は全部落とす（onerror等の除去）
@@ -252,7 +258,7 @@
         });
         if (el.tagName === "A") {
           var href = el.getAttribute("href") || "";
-          if (!SAFE_SCHEME.test(href.replace(/[\s -]/g, ""))) {
+          if (!SAFE_SCHEME.test(href.replace(/[\s\x00-\x1f]/g, ""))) {
             el.removeAttribute("href");
             el.removeAttribute("target");
           } else if (!allowedHost(href)) {
@@ -419,6 +425,9 @@
     ui.trayTxt = root.querySelector(".mc-tray-txt");
     ui.presets.id = "mc-presets";
     ui.tray.addEventListener("click", function () { setTray(!trayOpen); });
+    // シートの外（薄暗い部分）を押したら閉じる。一般的なボトムシートと同じ作法。
+    ui.scrim = root.querySelector(".mc-scrim");
+    ui.scrim.addEventListener("click", function () { setTray(false); });
     setTray(trayOpen);   // ラベルと実際の開閉状態を初期化時に合わせる
 
     // 起動直後だけ、ランチャーで「ここから質問できる」とそっと気づかせる
@@ -461,8 +470,12 @@
           "</div>" +
           '<button class="mc-close" aria-label="閉じる">×</button>' +
         "</header>" +
-        '<div class="mc-body" role="log" aria-live="polite" aria-atomic="false"></div>' +
-        '<div class="mc-presets"></div>' +
+        // 選択肢は会話の上に重ねて出す（会話欄の高さを奪わない）。stage はその基準枠。
+        '<div class="mc-stage">' +
+          '<div class="mc-body" role="log" aria-live="polite" aria-atomic="false"></div>' +
+          '<div class="mc-scrim" aria-hidden="true"></div>' +
+          '<div class="mc-presets"></div>' +
+        "</div>" +
         '<button class="mc-tray-toggle" type="button" aria-expanded="true" aria-controls="mc-presets">' +
           '<span class="mc-tray-txt">よくある質問から選ぶ</span><span class="mc-tray-caret">▾</span>' +
         "</button>" +
@@ -728,13 +741,13 @@
   // ------------------------------------------------------------
   // 選択肢エリアの開閉
   // ------------------------------------------------------------
-  // 選択肢はパネルの半分近くを占めるため、会話が始まっても開いたままだと
-  // 肝心の回答が画面外に押し出される。質問を送った時点で畳み、
-  // 答えを出せずカテゴリへ誘導する時だけ開き直す。
+  // 選択肢は会話の上に重なるシートなので、開いたままだと回答が隠れる。
+  // 質問を送った時点で畳み、答えを出せずカテゴリへ誘導する時だけ開き直す。
   var trayOpen = true;
   function setTray(open) {
     trayOpen = open;
     ui.presets.classList.toggle("mc-hidden-tray", !open);
+    ui.scrim.classList.toggle("mc-hidden-tray", !open);
     ui.tray.classList.toggle("mc-tray--closed", !open);
     ui.tray.setAttribute("aria-expanded", open ? "true" : "false");
     if (ui.trayTxt) ui.trayTxt.textContent = open ? "閉じる" : "よくある質問から選ぶ";
@@ -951,8 +964,8 @@
     // 6桁HEXのアクセント色なら、α付き派生色（フォーカスリング・パルス光彩）を作れる。
     // それ以外（rgb()や名前色）の場合は無難なニュートラル値にフォールバック。
     var isHex = /^#[0-9a-fA-F]{6}$/.test(a);
-    var glow  = isHex ? a + "59" : "rgba(13,110,140,.35)"; // フォーカスリング/光彩（不透明側）
-    var glow0 = isHex ? a + "00" : "rgba(13,110,140,0)";   // 同色の透明（パルス終端）
+    var glow  = isHex ? a + "59" : "rgba(17,17,17,.35)"; // フォーカスリング/光彩（不透明側）
+    var glow0 = isHex ? a + "00" : "rgba(17,17,17,0)";   // 同色の透明（パルス終端）
     return "" +
     ".mc-root{all:initial;font-family:-apple-system,BlinkMacSystemFont,'Hiragino Kaku Gothic ProN','Yu Gothic',Meiryo,sans-serif;}" +
     ".mc-root *{box-sizing:border-box;}" +
@@ -978,36 +991,41 @@
     ".mc-close:hover{opacity:1;background:rgba(255,255,255,.16);}" +
     ".mc-close:focus-visible{outline:2px solid " + at + ";outline-offset:2px;}" +
     // 本文
-    ".mc-body{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding:16px;background:#f5f7f9;display:flex;flex-direction:column;gap:10px;}" +
+    ".mc-body{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding:16px;background:#f5f5f5;display:flex;flex-direction:column;gap:10px;}" +
     ".mc-msg{display:flex;animation:mc-msg-in .25s ease;}" +
     "@keyframes mc-msg-in{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:none;}}" +
     ".mc-msg--bot{justify-content:flex-start;}" +
     ".mc-msg--user{justify-content:flex-end;}" +
     ".mc-bubble{max-width:82%;padding:11px 14px;border-radius:14px;font-size:14px;line-height:1.65;word-break:break-word;box-shadow:0 1px 2px rgba(0,0,0,.05);}" +
-    ".mc-msg--bot .mc-bubble{background:#fff;color:#222;border:1px solid #e3e8ec;border-bottom-left-radius:4px;}" +
+    ".mc-msg--bot .mc-bubble{background:#fff;color:#222;border:1px solid #e5e5e5;border-bottom-left-radius:4px;}" +
     ".mc-msg--user .mc-bubble{background:" + a + ";color:" + at + ";border-bottom-right-radius:4px;}" +
     ".mc-bubble a{color:" + a + ";font-weight:bold;text-decoration:underline;}" +
     ".mc-msg--user .mc-bubble a{color:" + at + ";}" +
     ".mc-ans-q{font-weight:bold;margin-bottom:4px;color:" + a + ";}" +
     // 入力中インジケーター（… のドット）
     ".mc-typing{display:flex;align-items:center;gap:4px;}" +
-    ".mc-typing span{width:7px;height:7px;border-radius:50%;background:#b3c0c8;display:inline-block;animation:mc-blink 1.2s infinite both;}" +
+    ".mc-typing span{width:7px;height:7px;border-radius:50%;background:#bdbdbd;display:inline-block;animation:mc-blink 1.2s infinite both;}" +
     ".mc-typing span:nth-child(2){animation-delay:.2s;}" +
     ".mc-typing span:nth-child(3){animation-delay:.4s;}" +
     "@keyframes mc-blink{0%,80%,100%{opacity:.3;}40%{opacity:1;}}" +
     // 関連質問（回答の下に出る「こちらもよく見られています」）
     ".mc-related{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px;}" +
-    ".mc-related-label{width:100%;font-size:11.5px;color:#7a8a93;margin-bottom:2px;}" +
-    // プリセット（選択肢エリア）。FAQが52件に増えたので、狭い帯に押し込まず
-    // パネルの4割程度まで使う。会話ログとの境目は上の罫線＋背景差で示す。
-    ".mc-presets{display:flex;flex-wrap:wrap;align-content:flex-start;gap:6px;padding:0 12px 12px;border-top:1px solid #e3e8ec;background:#fff;max-height:46%;overflow-y:auto;overscroll-behavior:contain;}" +
+    ".mc-related-label{width:100%;font-size:11.5px;color:#888888;margin-bottom:2px;}" +
+    // プリセット（選択肢エリア）。以前は会話欄の下に積んでいたため、開くと
+    // 会話欄が半分近くまで縮み回答が読みにくかった。会話の上に下から重なる
+    // シートにして、会話欄の高さは常に変えない。後ろの会話は薄く見せて
+    // 「閉じれば戻れる」ことを伝える。
+    ".mc-stage{flex:1;min-height:0;position:relative;display:flex;flex-direction:column;}" +
+    ".mc-scrim{position:absolute;inset:0;background:rgba(0,0,0,.22);z-index:2;}" +
+    ".mc-presets{position:absolute;left:0;right:0;bottom:0;z-index:3;display:flex;flex-wrap:wrap;align-content:flex-start;gap:6px;padding:0 12px 12px;background:#fff;border-radius:16px 16px 0 0;box-shadow:0 -6px 20px rgba(0,0,0,.12);max-height:80%;overflow-y:auto;overscroll-behavior:contain;animation:mc-sheet-in .18s ease-out;}" +
+    "@keyframes mc-sheet-in{from{transform:translateY(24px);opacity:0;}to{transform:none;opacity:1;}}" +
     // 見出し行：現在地＋戻る。長い一覧をスクロールしても消えないよう上に貼り付ける
     // （流れて消えると、どこにいるのか・どう戻るのかが分からなくなる）。
     ".mc-presets-head{position:sticky;top:0;z-index:1;width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 0 5px;background:#fff;}" +
-    ".mc-presets-head:not(:first-child){margin-top:6px;border-top:1px solid #f0f3f5;padding-top:10px;}" +
-    ".mc-presets-label{font-size:11.5px;color:#7a8a93;}" +
+    ".mc-presets-head:not(:first-child){margin-top:6px;border-top:1px solid #f0f0f0;padding-top:10px;}" +
+    ".mc-presets-label{font-size:11.5px;color:#888888;}" +
     ".mc-back{border:none;background:transparent;color:" + a + ";font-size:12px;font-weight:bold;cursor:pointer;padding:4px 8px;border-radius:8px;flex:none;}" +
-    ".mc-back:hover{background:#eef4f7;}" +
+    ".mc-back:hover{background:#f2f2f2;}" +
     ".mc-back:focus-visible{outline:2px solid " + a + ";outline-offset:1px;}" +
     ".mc-chip{border:1px solid " + a + ";color:" + a + ";background:#fff;border-radius:999px;padding:8px 14px;min-height:38px;display:inline-flex;align-items:center;font-size:12.5px;line-height:1.35;cursor:pointer;transition:background .12s,color .12s,transform .08s;text-align:left;text-decoration:none;}" +
     ".mc-chip:hover{background:" + a + ";color:" + at + ";}" +
@@ -1017,27 +1035,27 @@
     ".mc-chip:disabled{cursor:default;opacity:.45;}" +
     ".mc-chip--chosen{opacity:1!important;}" +
     ".mc-chip--chosen.mc-chip--related{background:" + a + ";color:" + at + ";border-color:" + a + ";}" +
-    ".mc-chip--chosen.mc-chip--back{background:#5a6a72;color:#fff;border-color:#5a6a72;}" +
+    ".mc-chip--chosen.mc-chip--back{background:#555555;color:#fff;border-color:#555555;}" +
     ".mc-chip--cat{font-weight:bold;}" +
     // 問い合わせは「答えが出なかった時の出口」なので、質問チップとは別物に見せる
-    ".mc-chip--contact{width:100%;justify-content:center;margin-top:6px;border-style:dashed;border-color:#c9d3d9;color:#5a6a72;font-weight:bold;}" +
-    ".mc-chip--contact:hover{background:#5a6a72;color:#fff;border-color:#5a6a72;border-style:solid;}" +
-    ".mc-chip--back{border-color:#c9d3d9;color:#5a6a72;}" +
-    ".mc-chip--back:hover{background:#5a6a72;color:#fff;}" +
-    ".mc-chip--back:focus-visible{outline-color:#5a6a72;}" +
-    ".mc-chip--related{font-size:12px;background:#f0f5f7;border-color:#dbe4e8;}" +
+    ".mc-chip--contact{width:100%;justify-content:center;margin-top:6px;border-style:dashed;border-color:#d0d0d0;color:#555555;font-weight:bold;}" +
+    ".mc-chip--contact:hover{background:#555555;color:#fff;border-color:#555555;border-style:solid;}" +
+    ".mc-chip--back{border-color:#d0d0d0;color:#555555;}" +
+    ".mc-chip--back:hover{background:#555555;color:#fff;}" +
+    ".mc-chip--back:focus-visible{outline-color:#555555;}" +
+    ".mc-chip--related{font-size:12px;background:#f5f5f5;border-color:#e0e0e0;}" +
     ".mc-chip--suggest{font-size:12.5px;background:#fff;border-color:" + a + ";font-weight:bold;}" +
     // 選択肢エリアの開閉バー。畳んでいる間も「まだ選択肢がある」と示し続ける。
-    ".mc-tray-toggle{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;border:none;border-top:1px solid #eef1f3;background:#fff;color:#5a6a72;font-size:12px;font-weight:bold;padding:9px 12px;cursor:pointer;transition:background .12s;}" +
-    ".mc-tray-toggle:hover{background:#f4f7f9;}" +
+    ".mc-tray-toggle{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;border:none;border-top:1px solid #eeeeee;background:#fff;color:#555555;font-size:12px;font-weight:bold;padding:9px 12px;cursor:pointer;transition:background .12s;}" +
+    ".mc-tray-toggle:hover{background:#f5f5f5;}" +
     ".mc-tray-toggle:focus-visible{outline:2px solid " + a + ";outline-offset:-2px;}" +
     ".mc-tray--closed{color:" + a + ";}" +
     ".mc-tray-caret{font-size:10px;transition:transform .15s;}" +
     ".mc-tray--closed .mc-tray-caret{transform:rotate(180deg);}" +
     ".mc-hidden-tray{display:none;}" +
     // 入力フォーム（font-size:16px = iOSの自動ズーム防止。タップしても画面が拡大しない）
-    ".mc-form{display:flex;align-items:center;gap:8px;padding:10px 12px;border-top:1px solid #eef1f3;background:#fff;}" +
-    ".mc-input{flex:1;min-width:0;border:1px solid #ccd4da;border-radius:999px;padding:10px 14px;font-size:16px;outline:none;transition:border-color .12s,box-shadow .12s;}" +
+    ".mc-form{display:flex;align-items:center;gap:8px;padding:10px 12px;border-top:1px solid #eeeeee;background:#fff;}" +
+    ".mc-input{flex:1;min-width:0;border:1px solid #d0d0d0;border-radius:999px;padding:10px 14px;font-size:16px;outline:none;transition:border-color .12s,box-shadow .12s;}" +
     ".mc-input:focus{border-color:" + a + ";box-shadow:0 0 0 3px " + glow + ";}" +
     ".mc-send{border:none;background:" + a + ";color:" + at + ";width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;flex:none;transition:opacity .12s,transform .08s;}" +
     ".mc-send:not(:disabled):hover{opacity:.9;}" +
@@ -1046,7 +1064,7 @@
     ".mc-send:disabled{opacity:.4;cursor:default;}" +
     // スクロールバーを細く控えめに（圧迫感を減らす）
     ".mc-body::-webkit-scrollbar,.mc-presets::-webkit-scrollbar{width:8px;}" +
-    ".mc-body::-webkit-scrollbar-thumb,.mc-presets::-webkit-scrollbar-thumb{background:#cdd6db;border-radius:8px;}" +
+    ".mc-body::-webkit-scrollbar-thumb,.mc-presets::-webkit-scrollbar-thumb{background:#d0d0d0;border-radius:8px;}" +
     ".mc-body::-webkit-scrollbar-track,.mc-presets::-webkit-scrollbar-track{background:transparent;}" +
     // スマホ：実機の表示領域(dvh)に合わせ、ノッチ/ホームバーを避ける
     "@media (max-width:480px){.mc-panel{right:0;bottom:0;width:100vw;height:100vh;height:100dvh;max-width:100vw;max-height:100vh;max-height:100dvh;border-radius:0;}.mc-form{padding-bottom:calc(10px + env(safe-area-inset-bottom,0px));}.mc-launcher{right:calc(16px + env(safe-area-inset-right,0px));bottom:calc(16px + env(safe-area-inset-bottom,0px));}}" +

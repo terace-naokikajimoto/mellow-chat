@@ -106,9 +106,15 @@
   // ============================================================
 
   // しきい値（スコアの目安。下げるほど積極的に回答する）
-  var CONFIDENT_SCORE = 5;    // これ以上なら自信を持って即回答
-  var SUGGEST_SCORE   = 1.0;  // これ以上なら「もしかして」候補として提示
-  var AMBIGUOUS_RATIO = 0.92; // 上位がこの比率以上で僅差なら「どれ？」と選んでもらう
+  // 値は test/eval.mjs（訪問者が打ちそうな300問の採点）で決めた。即答の約9割が正解で、
+  // 答えの無い質問に即答してしまうのは1割未満、という釣り合い。変えたら採点し直すこと。
+  var CONFIDENT_SCORE = 16;   // これ以上なら自信を持って即回答
+  var SUGGEST_SCORE   = 6;    // これ以上なら「もしかして」候補として提示
+  var AMBIGUOUS_RATIO = 0.94; // 上位がこの比率以上で僅差なら「どれ？」と選んでもらう
+  var EXAMPLE_WEIGHT  = 20;   // 質問例との近さ（0〜1）にかける重み
+  var DICE_WEIGHT     = 8;    // 回答本文も含めた文字の重なり（0〜1）にかける重み
+  var KW_DF_POWER     = 0.5;  // キーワードの加点を「その語が出てくる項目数」の何乗で割るか
+  var KW_DF = {};
 
   // 意図グループ：同じ意図を表す言い回しの集合。
   // 入力とFAQの双方が同じグループの語を含めば「意図が一致」とみなして加点する。
@@ -173,8 +179,9 @@
       .replace(/[ァ-ヶ]/g, function (c) {
         return String.fromCharCode(c.charCodeAt(0) - 0x60);
       })
-      // 長音・小書きなどの細かなゆれを吸収
+      // 長音・小書きなどの細かなゆれを吸収（「ウエット/ウェット」「フイット/フィット」）
       .replace(/ー/g, "")
+      .replace(/[ぁぃぅぇぉ]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) + 1); })
       // 記号・空白をまとめて除去（ゆらぎ吸収）
       .replace(/[\s　、。・,.?？!！「」『』（）()~〜・:：;；]/g, "")
       // 丁寧表現・終助詞など“意味の薄い語尾”を除去。
@@ -300,24 +307,87 @@
     return (2 * inter) / (aGrams.length + bGrams.length);
   }
 
+  // bi-gram の出現回数表
+  function gramCounts(s) {
+    var m = {}, g = bigrams(s);
+    for (var i = 0; i < g.length; i++) m[g[i]] = (m[g[i]] || 0) + 1;
+    return m;
+  }
+
+  // ⑥ 質問例（faq.json の examples）との近さを測るための重み。
+  // 「すか」「いい」のようにどの質問にも出る bi-gram は意味を運ばないので軽く、
+  // 「納期」「採寸」のように一部の項目にしか出ない bi-gram を重くする（IDF）。
+  var IDF = {}, IDF_UNSEEN = 1;
+  function idf(g) { return IDF.hasOwnProperty(g) ? IDF[g] : IDF_UNSEEN; }
+
+  // IDF重み付きベクトル（{gram: 重み}）と長さ
+  function weightedVec(s) {
+    var c = gramCounts(s), v = {}, n2 = 0;
+    for (var g in c) { var w = c[g] * idf(g); v[g] = w; n2 += w * w; }
+    return { v: v, n: Math.sqrt(n2) };
+  }
+
+  function cosine(a, b) {
+    if (!a.n || !b.n) return 0;
+    var dot = 0;
+    for (var g in a.v) if (b.v.hasOwnProperty(g)) dot += a.v[g] * b.v[g];
+    return dot / (a.n * b.n);
+  }
+
   // 起動時に各FAQの検索用インデックスを前計算（毎回の検索を軽く＆正確に）
   function buildIndex() {
+    // IDF：項目ごとに「質問文＋キーワード＋質問例」に出る bi-gram を数える
+    var df = {}, N = DATA.faqs.length;
+    for (var d = 0; d < N; d++) {
+      var fd = DATA.faqs[d];
+      var text = normalize(fd.q) + (fd.keywords || []).map(normalize).join("") +
+                 (fd.examples || []).map(normalize).join("");
+      var seen = gramCounts(text);
+      for (var sg in seen) df[sg] = (df[sg] || 0) + 1;
+    }
+    IDF = {};
+    for (var dg in df) IDF[dg] = Math.log(1 + N / df[dg]);
+    IDF_UNSEEN = Math.log(1 + N);   // どの項目にも無い bi-gram は最も重い＝似ていない方向に効く
+
     for (var i = 0; i < DATA.faqs.length; i++) {
       var f = DATA.faqs[i];
       var kws = (f.keywords || []).map(normalize);
       f._kw = kws;                                   // 正規化済みキーワード
+      f._kwByLen = kws.slice().sort(function (a, b) { return b.length - a.length; });
       f._qn = normalize(f.q);                         // 正規化済み質問文
       // 高信号フィールド（質問文＋キーワード）。この項目が“何についてか”を表す。
       f._signal = f._qn + kws.join("");
       // 回答本文も含めた“干し草の山”（類似度・recall用）
       var hay = f._signal + normalize(stripHtml(f.answer));
       f._grams = bigrams(hay);                        // 類似度計算用bi-gram
+      // 質問文と質問例を1文ずつベクトル化（いちばん近い1文との近さを見る）
+      f._exVecs = [f._qn].concat((f.examples || []).map(normalize))
+        .filter(function (s) { return s; })
+        .map(weightedVec);
       // この項目が属する意図グループ番号の集合（本文も含めて広めに判定＝recall）
       f._intents = {};
       for (var g = 0; g < INTENT_GROUPS.length; g++) {
         for (var t = 0; t < INTENT_GROUPS[g].length; t++) {
           if (hay.indexOf(normalize(INTENT_GROUPS[g][t])) !== -1) { f._intents[g] = true; break; }
         }
+      }
+    }
+    buildKeywordDf();
+  }
+
+  // キーワードごとに「質問文かキーワードにその語を含む項目の数」を数える
+  function buildKeywordDf() {
+    KW_DF = {};
+    for (var i = 0; i < DATA.faqs.length; i++) {
+      var kws = DATA.faqs[i]._kw || [];
+      for (var k = 0; k < kws.length; k++) {
+        var kw = kws[k];
+        if (!kw || KW_DF.hasOwnProperty(kw)) continue;
+        var n = 0;
+        for (var j = 0; j < DATA.faqs.length; j++) {
+          if (DATA.faqs[j]._signal.indexOf(kw) !== -1) n++;
+        }
+        KW_DF[kw] = n || 1;
       }
     }
   }
@@ -336,10 +406,12 @@
 
   // 入力文を全FAQと照合し、スコアの高い順に並べて返す
   function rankAnswers(input) {
-    var q = normalize(input);
+    // 文頭のあいさつ・呼びかけは質問の中身ではないので外す（類似度のノイズになる）
+    var q = normalize(input).replace(GREETING_HEAD, "");
     if (!q) return [];
     var qGrams = bigrams(q);
     var qi = queryIntents(q);
+    var qVec = weightedVec(q);
 
     var ranked = [];
     for (var i = 0; i < DATA.faqs.length; i++) {
@@ -351,10 +423,18 @@
       // ただし1文字のキーワード（"s" "m" など）は無関係な入力にも当たってしまい、
       // それ1つで確信しきい値を超えるとフォールバックすべき質問に誤答する。
       // 弱い手がかり扱いにして、単独では即答させない。
-      for (var k = 0; k < kws.length; k++) {
-        var kw = kws[k];
-        if (!kw || q.indexOf(kw) === -1) continue;
-        score += kw.length >= 2 ? 5 + kw.length * 0.4 : 1.5;
+      // 長い語から順に照合し、当たった部分は消してから短い語を見る。
+      // 「セミドライ」に当たったあと、その中の「ドライ」でもう一度加点しないため。
+      // 多くの項目に出てくる語（「セミドライ」「サイズ」など）は、それだけでは
+      // どの質問か決め手にならないので、出てくる項目数に応じて弱める。
+      var rest = q;
+      var byLen = item._kwByLen || [];
+      for (var k = 0; k < byLen.length; k++) {
+        var kw = byLen[k];
+        if (!kw || rest.indexOf(kw) === -1) continue;
+        rest = rest.split(kw).join("\u0000");
+        var base = kw.length >= 2 ? 5 + kw.length * 0.4 : 1.5;
+        score += base / Math.pow(KW_DF[kw] || 1, KW_DF_POWER);
       }
 
       // ② 質問文そのものとの部分一致
@@ -374,7 +454,17 @@
       }
 
       // ⑤ N-gram類似度（表記ゆれ・語順違い・部分一致を拾う）
-      score += diceSimilarity(qGrams, item._grams || []) * 8;
+      score += diceSimilarity(qGrams, item._grams || []) * DICE_WEIGHT;
+
+      // ⑥ 質問例との近さ：訪問者の言い回しに最も近い1文を探す。
+      //    「その答えを求める人はこう聞く」という例文と比べるので、
+      //    キーワードを含まない言い換えでも意図が近ければ拾える。
+      var best = 0, exs = item._exVecs || [];
+      for (var e = 0; e < exs.length; e++) {
+        var c = cosine(qVec, exs[e]);
+        if (c > best) best = c;
+      }
+      score += best * EXAMPLE_WEIGHT;
 
       // 同点なら keywords が少ない＝より具体的な項目を優先（わずかな補正）
       var tieBreak = kws.length ? 1 / kws.length : 0;
@@ -385,6 +475,23 @@
 
     ranked.sort(function (a, b) { return b.score - a.score; });
     return ranked;
+  }
+
+  // あいさつ・お礼だけの入力。FAQを探しても当たらず「分かりません」になると
+  // 感じが悪いので、ひとこと返して質問を促す。
+  var GREETING_HEAD = /^(こんにちは|こんばんは|おはようございます|おはよう|はじめまして|すみません|すいません|あの)+/;
+  var SMALL_TALK = [
+    { re: /^(こんにちは|こんばんは|おはよう|はじめまして|やあ|hello|hi|もしもし)/, reply: "こんにちは！ウェットスーツのことなら何でもお聞きください。たとえば「納期はどれくらい？」「初心者におすすめは？」のように入力できます。" },
+    { re: /(ありがと|助かりま|たすかりま|了解|りょうかい|わかりました|分かりました|thank)/, reply: "どういたしまして！ほかにも気になることがあれば、いつでもお聞きください。" },
+    { re: /^(さようなら|またね|おやすみ|バイバイ|ばいばい)/, reply: "ご利用ありがとうございました。またいつでもどうぞ。" }
+  ];
+  function smallTalk(input) {
+    var q = normalize(input);
+    if (!q || q.length > 14) return null;   // 長い文は質問の中身があるとみなす
+    for (var i = 0; i < SMALL_TALK.length; i++) {
+      if (SMALL_TALK[i].re.test(q)) return SMALL_TALK[i].reply;
+    }
+    return null;
   }
 
   // 後方互換：最有力のFAQを返す（ログ判定などで使用）。確信なしなら null。
@@ -558,6 +665,12 @@
     // 少し間を置いて返答（自然な見た目）
     setTimeout(function () {
       hideTyping();
+      var chat = smallTalk(text);
+      if (chat) {
+        addMessage(chat, "bot");
+        logQuestion(text, null, source || "input", "smalltalk");
+        return;
+      }
       var ranked = rankAnswers(text);
       var top = ranked[0];
       var hit = null;
@@ -583,7 +696,7 @@
         outcome = "answered";
         hit = top.item;
         addAnswer(hit);
-        renderRelated(hit);            // 同じカテゴリの関連質問をすすめる
+        renderRelated(hit, ranked);    // 次点の質問・同じカテゴリの質問をすすめる
         renderFeedback(text);          // 「解決しましたか？」で“自信あり×的外れ”を捕捉
       } else {
         // 候補を絞り込む（一定スコア以上のものを上位3件まで）
@@ -904,13 +1017,24 @@
   }
 
   // 回答のあと：同カテゴリの別の質問を「あわせて読まれています」として本文に提示
-  function renderRelated(hit) {
+  function renderRelated(hit, ranked) {
     if (!hit || !hit.category) return;
     // 回答の下には「関連質問」と「解決しましたか？」が続けて出る。
     // 3件だとボタンが5つ縦に積まれて主役の回答が埋もれるため2件に絞る。
-    var related = DATA.faqs.filter(function (f) {
-      return f.category === hit.category && f.q !== hit.q;
-    }).slice(0, 2);
+    // まず照合で2位以下だった質問（＝言い回しが近く、本当はこちらを知りたかった
+    // かもしれないもの）を出し、足りなければ同じカテゴリの質問で埋める。
+    var related = [];
+    var seen = {}; seen[hit.q] = true;
+    (ranked || []).forEach(function (r) {
+      if (related.length < 2 && r.score >= SUGGEST_SCORE && !seen[r.item.q]) {
+        related.push(r.item); seen[r.item.q] = true;
+      }
+    });
+    DATA.faqs.forEach(function (f) {
+      if (related.length < 2 && f.category === hit.category && !seen[f.q]) {
+        related.push(f); seen[f.q] = true;
+      }
+    });
     if (!related.length) return;
 
     var wrap = document.createElement("div");
@@ -1117,6 +1241,19 @@
       },
       rankAnswers: rankAnswers,
       findAnswer: findAnswer,
+      smallTalk: smallTalk,
+      // 精度測定（test/eval.mjs）でしきい値・重みを振って試すための口
+      _tune: function (o) {
+        if (o.CONFIDENT_SCORE != null) CONFIDENT_SCORE = o.CONFIDENT_SCORE;
+        if (o.SUGGEST_SCORE != null) SUGGEST_SCORE = o.SUGGEST_SCORE;
+        if (o.AMBIGUOUS_RATIO != null) AMBIGUOUS_RATIO = o.AMBIGUOUS_RATIO;
+        if (o.EXAMPLE_WEIGHT != null) EXAMPLE_WEIGHT = o.EXAMPLE_WEIGHT;
+        if (o.DICE_WEIGHT != null) DICE_WEIGHT = o.DICE_WEIGHT;
+        if (o.KW_DF_POWER != null) KW_DF_POWER = o.KW_DF_POWER;
+      },
+      _thresholds: function () {
+        return { CONFIDENT_SCORE: CONFIDENT_SCORE, SUGGEST_SCORE: SUGGEST_SCORE, AMBIGUOUS_RATIO: AMBIGUOUS_RATIO, EXAMPLE_WEIGHT: EXAMPLE_WEIGHT, DICE_WEIGHT: DICE_WEIGHT };
+      },
       normalize: normalize,
       sanitizeHtml: sanitizeHtml,   // DOMが必要なのでブラウザ上のテストから呼ぶ
       CONFIDENT_SCORE: CONFIDENT_SCORE,

@@ -46,7 +46,8 @@
 5. 問題なければFTPで `public/faq.json` を上書きアップロード。
 6. 回帰確認:
    ```bash
-   node --test test/match.test.mjs
+   node test/match.test.mjs
+   node test/eval.mjs   # 300問の採点。「即回答で誤答」が増えていないこと
    python3 -c "import json;json.load(open('public/faq.json'))"
    ```
 
@@ -62,10 +63,10 @@
 > 1. **未回答ログを似た質問でクラスタリングし、件数の多い順に並べる。** 各クラスタに代表質問と件数を付ける。
 > 2. 各クラスタを次の3つに分類し、対応案を出す:
 >    - **(a) 既存FAQへのキーワード追加** … 既に答えはあるのに表記ゆれ・言い換えで拾えなかったもの
->      （`suggested` に多い）。どの `faq` の `keywords` に、どの語を足すかを具体的に示す。
+>      （`suggested` に多い）。どの `faq` の `examples` に、取りこぼした言い回しをそのまま足すかを具体的に示す（特徴的な語があれば `keywords` にも）。
 >      表記ゆれ（ひらがな/漢字/英字/言い換え）を意識し、誤検出が増えない範囲で。
 >    - **(b) 新規FAQ追加** … コーパスに事実があるのにFAQに無いトピック（`fallback` に多い）。
->      新しい `{category, q, keywords, answer}` を作る。`category` は既存 `categories[].id` のいずれか。
+>      新しい `{category, q, keywords, examples, answer}` を作る（`examples` は訪問者が打ちそうな言い回し8〜12個）。`category` は既存 `categories[].id` のいずれか。
 >      **事実はコーパスのみを根拠にし、無い数値・固有名詞・サービスを創作しない**
 >      （存在しない料金・採寸方法・在庫などを書かない）。一般的な選び方・お手入れの助言は、
 >      サイトの事実と矛盾しない範囲なら可。
@@ -74,8 +75,8 @@
 > 3. **`unresolved`（自信を持って答えたのに解決しなかった）は最優先で点検。** どのFAQの回答が
 >    ズレている可能性があるかを指摘し、回答本文の修正案を出す（事実はコーパス根拠）。
 > 4. **既存の構造・カテゴリ・トーンは維持。** スキーマは
->    `{ fallback, greeting, categories:[{id,label}], faqs:[{category,q,keywords,answer}] }`。
->    `keywords` は各5〜10語。リンクは実在URLのみ（`contact.html` であって `contact/` ではない等）。
+>    `{ fallback, greeting, categories:[{id,label}], faqs:[{category,q,keywords,examples,answer}] }`。
+>    `keywords` は各5〜12語（どの質問にも当てはまる語は入れない）。リンクは実在URLのみ（`contact.html` であって `contact/` ではない等）。
 > 5. 必要なら、繰り返し現れる意図語（例 別の言い回し）を `public/chat-widget.js` の
 >    `INTENT_GROUPS` に足す提案も出す（こちらはコード変更なので提案のみ。勝手に確定しない）。
 > 6. 出力は次の2つ:

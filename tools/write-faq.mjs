@@ -18,6 +18,8 @@ export function formatFaq(data) {
     L.push(`      "category": ${j(f.category)},`);
     L.push(`      "q": ${j(f.q)},`);
     L.push(`      "keywords": [${f.keywords.map(j).join(", ")}],`);
+    // examples は「訪問者が実際に打ちそうな言い回し」。照合で最も効く手がかり。
+    if (f.examples && f.examples.length) L.push(`      "examples": [${f.examples.map(j).join(", ")}],`);
     // popular は「開いた直後にすぐ押せる質問」に出す印。付いていない項目には書かない。
     if (f.popular) L.push(`      "popular": true,`);
     L.push(`      "answer": ${j(f.answer)}`);
